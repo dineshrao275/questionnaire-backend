@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     Text,
 )
+from sqlalchemy.ext.mutable import MutableList
 from datetime import datetime
 from sqlalchemy import String
 from sqlalchemy.sql import func
@@ -59,8 +60,8 @@ class UserProgress(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String, ForeignKey("users.id"), nullable=False, unique=True)
     current_question_id = Column(String, ForeignKey("questions.id"), nullable=True)
-    completed_questions = Column(JSON, default=list)  # Array of question IDs
-    question_path = Column(JSON, default=list)  # Ordered array of question IDs
+    question_path = Column(MutableList.as_mutable(JSON), default=[])
+    completed_questions = Column(MutableList.as_mutable(JSON), default=[])
     start_time = Column(DateTime, default=func.now())
     last_activity = Column(DateTime, default=func.now())
     is_completed = Column(Boolean, default=False)

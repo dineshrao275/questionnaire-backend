@@ -32,18 +32,17 @@ def get_initial_question(
         db.query(UserProgress).filter(UserProgress.user_id == current_user.id).first()
     )
 
-    if progress and not progress.is_completed:
-        # If user has in-progress questionnaire, return their current question
-        current_question = (
-            db.query(Question)
-            .filter(Question.id == progress.current_question_id)
-            .first()
-        )
-        if current_question:
-            return current_question
+    if progress and progress.is_completed:
+        # If questionnaire is completed, delete all answers and start fresh
+        db.query(UserAnswer).filter(UserAnswer.user_id == current_user.id).delete()
+        progress.completed_questions = []
+        progress.question_path = []
+        progress.is_completed = False
+        progress.start_time = datetime.now()
+        progress.last_activity = datetime.now()
+        db.commit()
 
-    # Get the first question (typically has a specific flag or ID in real implementation)
-    # For simplicity, we'll just get the first question from the database
+    # Get the first question
     first_question = db.query(Question).first()
 
     if not first_question:
@@ -54,21 +53,20 @@ def get_initial_question(
     # Create or update user progress
     if progress:
         progress.current_question_id = first_question.id
-        progress.completed_questions = []
         progress.question_path = [str(first_question.id)]
-        progress.start_time = datetime.now()
-        progress.last_activity = datetime.now()
-        progress.is_completed = False
     else:
         progress = UserProgress(
             user_id=current_user.id,
             current_question_id=first_question.id,
             question_path=[str(first_question.id)],
+            completed_questions=[],
+            is_completed=False,
+            start_time=datetime.now(),
+            last_activity=datetime.now()
         )
         db.add(progress)
 
     db.commit()
-
     return first_question
 
 
@@ -130,8 +128,9 @@ def submit_answer(
     )
     db.add(user_answer)
 
-    # Update progress
-    progress.completed_questions.append(str(question.id))
+    # Update progress - Add question to completed questions
+    if str(question.id) not in progress.completed_questions:
+        progress.completed_questions.append(str(question.id))
     progress.last_activity = datetime.now()
 
     # Determine next question based on answer
@@ -153,7 +152,8 @@ def submit_answer(
         )
         if next_question:
             progress.current_question_id = next_question.id
-            progress.question_path.append(str(next_question.id))
+            if str(next_question.id) not in progress.question_path:
+                progress.question_path.append(str(next_question.id))
 
     # If there's no next question or we've reached the limit (10 questions), mark as completed
     if not next_question or len(progress.completed_questions) >= 10:
@@ -284,9 +284,7 @@ def update_answer(
 
 
 # Get previous question
-@router.get(
-    "/questions/previous/{current_question_id}", response_model=QuestionResponse
-)
+@router.get("/questions/previous/{current_question_id}", response_model=QuestionResponse)
 def get_previous_question(
     current_question_id: str,
     db: Session = Depends(get_db),
@@ -294,44 +292,56 @@ def get_previous_question(
 ):
     # Get user progress
     progress = (
-        db.query(UserProgress).filter(UserProgress.user_id == current_user.id).first()
+        db.query(UserProgress)
+        .filter(UserProgress.user_id == current_user.id)
+        .first()
     )
+    
     if not progress:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User progress not found"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No progress found for user"
         )
 
-    # Find the current question in the path
+    # Find the current question's index in the path
     try:
         current_index = progress.question_path.index(current_question_id)
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Current question not found in user's path",
+            detail="Current question not found in path"
         )
 
-    # Make sure there is a previous question
-    if current_index <= 0:
+    # If this is the first question, we can't go back
+    if current_index == 0:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="This is the first question"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Already at first question"
         )
 
-    # Get the previous question ID
-    prev_question_id = progress.question_path[current_index - 1]
+    # Get the previous question ID from the path
+    previous_question_id = progress.question_path[current_index - 1]
 
     # Get the previous question
-    prev_question = db.query(Question).filter(Question.id == prev_question_id).first()
-    if not prev_question:
+    previous_question = (
+        db.query(Question)
+        .filter(Question.id == previous_question_id)
+        .first()
+    )
+
+    if not previous_question:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Previous question not found"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Previous question not found"
         )
 
-    # Update progress
-    progress.current_question_id = prev_question.id
-    progress.last_activity = datetime.now()
+    # Update progress to point to the previous question
+    progress.current_question_id = previous_question.id
+    progress.question_path = progress.question_path[:current_index]
+    progress.is_completed = False
     db.commit()
 
-    return prev_question
+    return previous_question
 
 
 # Get user progress
@@ -349,14 +359,48 @@ def get_progress(
             status_code=status.HTTP_404_NOT_FOUND, detail="User progress not found"
         )
 
-    # Calculate completion percentage
-    # In a real implementation, you might have a known total number of questions
-    # For this example, let's say 10 questions is 100%
-    total_questions = 10
+    # Get all answers for completed questions
+    answers = {}
+    for question_id in progress.completed_questions:
+        answer = (
+            db.query(UserAnswer)
+            .filter(
+                UserAnswer.user_id == current_user.id,
+                UserAnswer.question_id == question_id,
+            )
+            .first()
+        )
+        if answer:
+            answers[question_id] = answer.answer_value
+
+    # Calculate completion percentage based on completed questions
+    total_questions = 10  # Fixed total questions
     completed = len(progress.completed_questions)
     completion_percentage = (completed / total_questions) * 100
 
-    return {**progress.__dict__, "completion_percentage": completion_percentage}
+    # Ensure we have all 10 questions in the path
+    if len(progress.question_path) < total_questions:
+        # Get the next questions based on the last answer
+        last_question_id = progress.question_path[-1] if progress.question_path else None
+        if last_question_id:
+            last_question = db.query(Question).filter(Question.id == last_question_id).first()
+            if last_question and last_question.next_question_mapping:
+                next_question_id = last_question.next_question_mapping.get("default")
+                if next_question_id and next_question_id not in progress.question_path:
+                    progress.question_path.append(next_question_id)
+                    db.commit()
+
+    return {
+        "completed_questions": progress.completed_questions,
+        "question_path": progress.question_path,
+        "is_completed": progress.is_completed,
+        "completion_percentage": completion_percentage,
+        "current_question_id": progress.current_question_id,
+        "start_time": progress.start_time,
+        "last_activity": progress.last_activity,
+        "answers": answers,
+        "total_questions": total_questions
+    }
 
 
 # Get summary of user's answers
