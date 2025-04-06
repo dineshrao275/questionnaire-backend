@@ -1,0 +1,42 @@
+# Python artifacts
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+
+# Database files
+*.sqlite3
+*.db
+
+# IDE and editor files
+.idea/
+.vscode/
+
+
+# OS-specific files
+.DS_Store
+.AppleDouble
+.LSOverride
+.Trash-*
+Thumbs.db
+.Spotlight-V100
+.Trashes
+.ehthumbs.db
+.ehthumbs_vista.db
+.directory
+
+
+
+# Alembic migrations
+migrations/
+alembic.ini
+alembic/
+
+#collections
+*.json
+
+#collection
+*.bru
